@@ -1,0 +1,31 @@
+# Never commit actual server credentials or generated VPN profiles
+*.key
+*.uuid
+*.private
+*.public
+*.bak
+awg0.conf
+config.json
+*.log
+*.env
+__pycache__/
+*.pyc
+
+# Additional secrets, exports, archives and rotated diagnostics
+*.pem
+*.p12
+*.pfx
+*.ovpn
+*.mobileconfig
+*.conf.bak
+*.log.*
+logs/
+.env.*
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.sqlite
+*.sqlite3
+*.db

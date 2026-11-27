@@ -1,0 +1,36 @@
+name: Syntax checks
+on:
+  push:
+  pull_request:
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Bash syntax
+        run: bash -n install.sh lib/*.sh
+      - name: Check Python syntax
+        run: python3 -m py_compile lib/*.py
+      - name: Run profile parser unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Check SSH port parser
+        run: |
+          bash -c 'source lib/system.sh; valid_port 221; valid_port 65535; ! valid_port 0; ! valid_port 65536'
+      - name: Check state keys and administrator prompt
+        run: sudo script -q -e -c 'bash tests/test_state.sh' /dev/null
+      - name: Smoke-test interactive menu on a fresh runner
+        run: |
+          sudo install -d -m 700 /opt/vps-installer
+          sudo cp -r lib /opt/vps-installer/lib
+          sudo cp install.sh /opt/vps-installer/install.sh
+          sudo python3 tests/smoke_menu.py
+      - name: Check file encoding and placeholders
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for p in [Path('install.sh'), *Path('lib').glob('*.sh'), *Path('lib').glob('*.py')]:
+              text=p.read_text(encoding='utf-8')
+              assert 'Android-04' not in text
+              assert 'ens3' not in text
+          print('Static checks passed')
+          PY
