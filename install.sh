@@ -44,7 +44,7 @@ REFRESH_MODULES=0
 case "$0" in
   bash|-bash|sh|-sh) REFRESH_MODULES=1 ;;
 esac
-for file in common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py; do
+for file in common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py msmtp_probe.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py; do
   if (( REFRESH_MODULES )) || [[ ! -s "$ROOT/lib/$file" ]]; then
     url="https://raw.githubusercontent.com/$OWNER_REPO/$SOURCE_REF/lib/$file"
     temp="$(mktemp "$ROOT/lib/.download.XXXXXX")" || exit 1

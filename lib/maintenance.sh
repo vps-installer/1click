@@ -6,12 +6,20 @@ MAINT_UNITS=/etc/systemd/system
 MAINT_TASK=/usr/local/sbin/vps-maintenance-task
 MAINT_NOTIFY_SCRIPT=/usr/local/sbin/vps-maintenance-notify
 MAINT_GEODATA=/usr/local/sbin/vps-maintenance-geodata
+MAINT_SMTP_PROBE=/usr/local/sbin/vps-maintenance-msmtp-probe
+MAINT_MSMTPRC=${MAINT_MSMTPRC:-/etc/msmtprc}
 
 maint_load() {
-  MAINT_SENDER='' MAINT_RECIPIENT='' MAINT_NOTIFY=no MAINT_AUTO_REBOOT=no
+  MAINT_SENDER='' MAINT_RECIPIENT='' MAINT_NOTIFY=no MAINT_AUTO_REBOOT=no MAINT_SOURCE=''
   if [[ -f "$MAINT_CONFIG" ]]; then
     # The installer alone writes this root-owned 0600 file.
     source "$MAINT_CONFIG"
+  fi
+  # External sender is never trusted blindly when its msmtprc has changed.
+  if [[ "$MAINT_SOURCE" == external ]]; then
+    local current
+    current="$(maint_smtp_probe 2>/dev/null)" || { MAINT_NOTIFY=no; return 0; }
+    [[ "$MAINT_SENDER" == "$(maint_smtp_value sender "$current")" ]] || MAINT_NOTIFY=no
   fi
 }
 maint_save() {
@@ -23,6 +31,7 @@ maint_save() {
     printf 'MAINT_RECIPIENT=%q\n' "$MAINT_RECIPIENT"
     printf 'MAINT_NOTIFY=%q\n' "$MAINT_NOTIFY"
     printf 'MAINT_AUTO_REBOOT=%q\n' "$MAINT_AUTO_REBOOT"
+    printf 'MAINT_SOURCE=%q\n' "$MAINT_SOURCE"
   } > "$tmp"
   chmod 600 "$tmp"
   mv -f "$tmp" "$MAINT_CONFIG"
@@ -31,6 +40,7 @@ maint_ensure_binaries() {
   install -m 700 "$ROOT/lib/maintenance_task.sh" "$MAINT_TASK" || return 1
   install -m 700 "$ROOT/lib/maintenance_notify.sh" "$MAINT_NOTIFY_SCRIPT" || return 1
   install -m 700 "$ROOT/lib/maintenance_geodata.py" "$MAINT_GEODATA" || return 1
+  install -m 700 "$ROOT/lib/msmtp_probe.py" "$MAINT_SMTP_PROBE" || return 1
 }
 maint_ask_schedule() {
   local title="$1" current="$2" selection
@@ -308,6 +318,49 @@ maint_ubuntu_menu() {
   done
 }
 maint_valid_email() { [[ "$1" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
+# Read only public fields from the actual default msmtp account.
+# Unsupported configurations remain untouched, requiring manual configuration.
+maint_smtp_probe() {
+  local executable="$MAINT_SMTP_PROBE"
+  [[ -x "$executable" ]] || executable="$ROOT/lib/msmtp_probe.py"
+  python3 "$executable" --file "$MAINT_MSMTPRC"
+}
+maint_smtp_value() {
+  local key="$1" line
+  while IFS= read -r line; do
+    case "$line" in "$key="*) printf '%s\n' "${line#*=}"; return 0;; esac
+  done <<< "$2"
+  return 1
+}
+maint_smtp_owned() {
+  [[ -f "$MAINT_MSMTPRC" ]] && grep -Fxq '# Managed by VPS Installer' "$MAINT_MSMTPRC"
+}
+maint_smtp_use_existing() {
+  local fields sender recipient
+  [[ -f "$MAINT_MSMTPRC" ]] || { warn 'No existing /etc/msmtprc.'; return 1; }
+  maint_smtp_owned && { warn 'SMTP is already managed by VPS Installer.'; return 1; }
+  fields="$(maint_smtp_probe)" || { warn 'Cannot automatically import this SMTP configuration. File unchanged.'; return 1; }
+  sender="$(maint_smtp_value sender "$fields")" || return 1
+  say "Detected SMTP host: $(maint_smtp_value host "$fields")"
+  say "Detected sender / username: $sender"
+  say 'The existing /etc/msmtprc and its credentials will not be modified.'
+  maint_load
+  ask 'Recipient email address:'; recipient="$REPLY"
+  maint_valid_email "$recipient" || { warn 'Invalid recipient.'; return 1; }
+  yesno 'Use existing SMTP configuration for maintenance notifications?' || return 1
+  [[ -x /usr/sbin/sendmail ]] || { warn 'Missing /usr/sbin/sendmail (msmtp-mta). No changes made.'; return 1; }
+  maint_ensure_binaries || { warn 'Cannot install maintenance notification helper.'; return 1; }
+  MAINT_SENDER="$sender" MAINT_RECIPIENT="$recipient" MAINT_NOTIFY=no MAINT_SOURCE=external
+  maint_save || return 1
+  if maint_smtp_test; then
+    MAINT_NOTIFY=yes
+    maint_save || return 1
+    ok 'Existing SMTP configuration adopted. Notifications enabled.'
+  else
+    warn 'SMTP test failed; notifications remain disabled. Existing /etc/msmtprc unchanged.'
+    return 1
+  fi
+}
 maint_smtp_configure() {
   local host port encryption sender recipient password original tmp save
   maint_load
@@ -326,15 +379,16 @@ maint_smtp_configure() {
   [[ -n "$password" ]] || { warn 'Password required.'; return 1; }
   ask 'Recipient email address:'; recipient="$REPLY"
   maint_valid_email "$recipient" || { warn 'Invalid recipient.'; return 1; }
-  if [[ -f /etc/msmtprc ]] && ! grep -Fxq '# Managed by VPS Installer' /etc/msmtprc; then
+  if [[ -f "$MAINT_MSMTPRC" ]] && ! maint_smtp_owned; then
     warn 'Existing /etc/msmtprc was not created by this installer.'
     yesno 'Back it up and replace it?' || return 1
   fi
   yesno 'Save SMTP configuration?' || return 1
   run_step 'Install msmtp' apt_retry apt-get -o DPkg::Lock::Timeout=180 install -y msmtp msmtp-mta ca-certificates || return 1
+  maint_ensure_binaries || return 1
   install -d -m 700 "$MAINT_DIR"
-  if [[ -f /etc/msmtprc ]]; then
-    cp -p /etc/msmtprc "$MAINT_DIR/msmtprc.before-maintenance.$(date +%Y%m%d%H%M%S)" || return 1
+  if [[ -f "$MAINT_MSMTPRC" ]]; then
+    cp -p "$MAINT_MSMTPRC" "$MAINT_DIR/msmtprc.before-maintenance.$(date +%Y%m%d%H%M%S)" || return 1
   fi
   tmp="$(mktemp "$MAINT_DIR/.smtp-password.XXXXXX")" || return 1
   printf '%s\n' "$password" > "$tmp"; chmod 600 "$tmp"
@@ -355,8 +409,8 @@ from $sender
 user $sender
 passwordeval cat $MAINT_DIR/smtp-password
 EOF
-  chmod 600 "$tmp"; mv -f "$tmp" /etc/msmtprc
-  MAINT_SENDER="$sender" MAINT_RECIPIENT="$recipient" MAINT_NOTIFY=yes
+  chmod 600 "$tmp"; mv -f "$tmp" "$MAINT_MSMTPRC"
+  MAINT_SENDER="$sender" MAINT_RECIPIENT="$recipient" MAINT_NOTIFY=yes MAINT_SOURCE=managed
   maint_save || return 1
   ok 'SMTP configuration saved. Send a test message to verify delivery.'
 }
@@ -366,13 +420,13 @@ maint_smtp_addresses() {
   ask_choice 'Choose option:' '1:Sender' '2:Recipient' '0:Exit' || return
   case "$REPLY" in
     1)
-      [[ -f /etc/msmtprc ]] && grep -Fxq '# Managed by VPS Installer' /etc/msmtprc || { warn 'No managed SMTP configuration.'; return 1; }
+      maint_smtp_owned || { warn 'Sender and password of an external SMTP account must be edited in /etc/msmtprc, then imported again.'; return 1; }
       ask 'New sender / username:'
       maint_valid_email "$REPLY" || { warn 'Invalid email.'; return 1; }
       local sender="$REPLY" tmp
       tmp="$(mktemp /etc/.msmtprc.XXXXXX)" || return 1
-      sed -E "s/^from .*/from $sender/; s/^user .*/user $sender/" /etc/msmtprc > "$tmp"
-      chmod 600 "$tmp"; mv "$tmp" /etc/msmtprc
+      sed -E "s/^from .*/from $sender/; s/^user .*/user $sender/" "$MAINT_MSMTPRC" > "$tmp"
+      chmod 600 "$tmp"; mv "$tmp" "$MAINT_MSMTPRC"
       MAINT_SENDER="$sender"; maint_save
       ;;
     2)
@@ -384,7 +438,7 @@ maint_smtp_addresses() {
   esac
 }
 maint_smtp_password() {
-  [[ -f /etc/msmtprc ]] && grep -Fxq '# Managed by VPS Installer' /etc/msmtprc || { warn 'No managed SMTP configuration.'; return 1; }
+  maint_smtp_owned || { warn 'External SMTP passwords must be changed outside the installer.'; return 1; }
   local password tmp
   printf 'New SMTP password (hidden): ' >&4
   IFS= read -rs password <&3 || return 1
@@ -397,6 +451,12 @@ maint_smtp_password() {
 }
 maint_smtp_test() {
   maint_load
+  if [[ "$MAINT_SOURCE" == external && "$MAINT_NOTIFY" == no ]]; then
+    # During initial adoption notifications are disabled but metadata matches.
+    local fields
+    fields="$(maint_smtp_probe 2>/dev/null)" || { warn 'External SMTP config cannot be read.'; return 1; }
+    [[ "$MAINT_SENDER" == "$(maint_smtp_value sender "$fields")" ]] || { warn 'External SMTP sender has changed. Import it again.'; return 1; }
+  fi
   if [[ -z "$MAINT_RECIPIENT" || -z "$MAINT_SENDER" ]]; then warn 'Configure SMTP first.'; return 1; fi
   if printf 'From: %s\nTo: %s\nSubject: [%s] Maintenance SMTP test\n\nTest from VPS Installer.\n' \
        "$MAINT_SENDER" "$MAINT_RECIPIENT" "$(hostname)" |
@@ -405,36 +465,49 @@ maint_smtp_test() {
   else warn 'SMTP submission failed.'; return 1; fi
 }
 maint_smtp_menu() {
-  local choice
+  local choice fields account_state host port encryption sender
   while :; do
     maint_load
     say ''; say 'EMAIL NOTIFICATIONS (MSMTP)'
-    say "Status: $MAINT_NOTIFY"
-    if [[ -f /etc/msmtprc ]] && grep -Fxq '# Managed by VPS Installer' /etc/msmtprc; then
-      say "SMTP host: $(awk '$1=="host"{print $2}' /etc/msmtprc)"
-      say "SMTP port: $(awk '$1=="port"{print $2}' /etc/msmtprc)"
-      say "Encryption: $(awk '$1=="tls_starttls"{print ($2=="on"?"STARTTLS":"TLS-on-connect")}' /etc/msmtprc)"
+    fields=''; account_state='Not configured'
+    if [[ -f "$MAINT_MSMTPRC" ]]; then
+      fields="$(maint_smtp_probe 2>/dev/null)" && account_state='Configured (external)'
+      if maint_smtp_owned; then account_state='Configured (installer-managed)'; fi
+      if [[ -z "$fields" ]]; then account_state='Detected (unsupported account format)'; fi
     fi
-    say "Sender / Username: ${MAINT_SENDER:-Not configured}"
+    say "SMTP: $account_state"
+    if [[ -n "$fields" ]]; then
+      say "SMTP host: $(maint_smtp_value host "$fields")"
+      say "SMTP port: $(maint_smtp_value port "$fields")"
+      say "Encryption: $(maint_smtp_value encryption "$fields")"
+      sender="$(maint_smtp_value sender "$fields")"
+    else sender='Not configured'; fi
+    say "Sender / Username: $sender"
     say "Recipient: ${MAINT_RECIPIENT:-Not configured}"
-    say '1) Configure SMTP'; say '2) Change sender / recipient'
-    say '3) Change SMTP password'; say '4) Send test email'
-    say '5) Enable / Disable notifications'; say '6) Remove SMTP configuration'; say '0) Exit'
-    ask_choice 'Choose option:' '1:Configure' '2:Addresses' '3:Password' '4:Test' '5:Toggle' '6:Remove' '0:Exit' || continue
+    say "Notifications: $MAINT_NOTIFY"
+    say '1) Use existing SMTP configuration'; say '2) Configure SMTP'
+    say '3) Change sender / recipient'; say '4) Change SMTP password'
+    say '5) Send test email'; say '6) Enable / Disable notifications'
+    say '7) Remove installer SMTP settings'; say '0) Exit'
+    ask_choice 'Choose option:' '1:Use existing' '2:Configure' '3:Addresses' '4:Password' '5:Test' '6:Toggle' '7:Remove' '0:Exit' || continue
     choice="$REPLY"
     case "$choice" in
-      1) maint_smtp_configure || warn 'SMTP configuration was not saved.' ;;
-      2) maint_smtp_addresses ;;
-      3) maint_smtp_password ;;
-      4) maint_smtp_test ;;
-      5) if [[ -z "$MAINT_SENDER" ]]; then warn 'Configure SMTP first.'; else
+      1) maint_smtp_use_existing || warn 'Existing SMTP configuration was not adopted.' ;;
+      2) maint_smtp_configure || warn 'SMTP configuration was not saved.' ;;
+      3) maint_smtp_addresses ;;
+      4) maint_smtp_password ;;
+      5) maint_smtp_test ;;
+      6) if [[ -z "$MAINT_SENDER" || -z "$MAINT_RECIPIENT" || -z "$fields" ]]; then
+           warn 'Import or configure a working SMTP account first.'
+         elif [[ "$MAINT_SENDER" != "$sender" ]]; then
+           warn 'SMTP sender changed; import the account again.'
+         else
            [[ "$MAINT_NOTIFY" == yes ]] && MAINT_NOTIFY=no || MAINT_NOTIFY=yes
            maint_save && ok "Notifications: $MAINT_NOTIFY"
          fi ;;
-      6) if yesno 'Remove installer-owned SMTP configuration and credentials?'; then
-           if [[ -f /etc/msmtprc ]] && grep -Fxq '# Managed by VPS Installer' /etc/msmtprc; then rm -f /etc/msmtprc; fi
-           rm -f "$MAINT_DIR/smtp-password"
-           MAINT_SENDER='' MAINT_RECIPIENT='' MAINT_NOTIFY=no
+      7) if yesno 'Remove installer SMTP settings? External /etc/msmtprc will be preserved.'; then
+           if maint_smtp_owned; then rm -f "$MAINT_MSMTPRC" "$MAINT_DIR/smtp-password"; fi
+           MAINT_SENDER='' MAINT_RECIPIENT='' MAINT_NOTIFY=no MAINT_SOURCE=''
            maint_save
          fi ;;
       0) return ;;
