@@ -39,29 +39,117 @@ if [[ "$EUID" != 0 ]]; then
 fi
 mkdir -p "$ROOT/lib"
 chmod 700 "$ROOT"
-# The remote curl bootstrap refreshes modules; the installed local command works offline.
+# A curl/bash bootstrap must run the freshly downloaded local script, not
+# continue executing the potentially cached bootstrap body in memory.
+# A local sudo vps-installer invocation remains offline if all modules exist.
 REFRESH_MODULES=0
 case "$0" in
   bash|-bash|sh|-sh) REFRESH_MODULES=1 ;;
 esac
-for file in common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py msmtp_probe.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py; do
-  if (( REFRESH_MODULES )) || [[ ! -s "$ROOT/lib/$file" ]]; then
+INSTALLER_MODULES=(common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py msmtp_probe.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py)
+if (( REFRESH_MODULES )); then
+  stage="$(mktemp -d "$ROOT/.refresh.XXXXXXXX")" || exit 1
+  mkdir -p "$stage/lib" || { rm -rf -- "$stage"; exit 1; }
+  # Bust the raw.githubusercontent.com edge cache on every refresh.
+  refresh_id="$(date +%s)-$$"
+  refresh_failed=0
+  for file in "${INSTALLER_MODULES[@]}"; do
+    url="https://raw.githubusercontent.com/$OWNER_REPO/$SOURCE_REF/lib/$file?refresh=$refresh_id"
+    curl --fail --silent --show-error --location --retry 3 "$url" -o "$stage/lib/$file" || { refresh_failed=1; break; }
+    [[ -s "$stage/lib/$file" ]] || { refresh_failed=1; break; }
+  done
+  if (( ! refresh_failed )); then
+    url="https://raw.githubusercontent.com/$OWNER_REPO/$SOURCE_REF/install.sh?refresh=$refresh_id"
+    curl --fail --silent --show-error --location --retry 3 "$url" -o "$stage/install.sh" || refresh_failed=1
+    [[ -s "$stage/install.sh" ]] || refresh_failed=1
+  fi
+  if (( ! refresh_failed )); then
+    for file in "$stage/install.sh" "$stage"/lib/*.sh; do
+      bash -n "$file" || { refresh_failed=1; break; }
+    done
+    if (( ! refresh_failed )); then
+      python3 -m py_compile "$stage"/lib/*.py || refresh_failed=1
+    fi
+  fi
+  if (( refresh_failed )); then
+    echo "Installer refresh failed validation/download; installed files unchanged." >&2
+    rm -rf -- "$stage"
+    exit 1
+  fi
+
+  # Snapshot the previous complete set before touching any installed module.
+  previous="$(mktemp -d "$ROOT/.previous.XXXXXXXX")" || { rm -rf -- "$stage"; exit 1; }
+  mkdir -p "$previous/lib" || { rm -rf -- "$stage" "$previous"; exit 1; }
+  for file in "${INSTALLER_MODULES[@]}"; do
+    if [[ -e "$ROOT/lib/$file" ]] && ! cp -p -- "$ROOT/lib/$file" "$previous/lib/$file"; then
+      refresh_failed=1
+      break
+    fi
+  done
+  if (( ! refresh_failed )) && [[ -e "$ROOT/install.sh" ]]; then
+    cp -p -- "$ROOT/install.sh" "$previous/install.sh" || refresh_failed=1
+  fi
+  if (( refresh_failed )); then
+    echo "Cannot back up the existing installer; installed files unchanged." >&2
+    rm -rf -- "$stage" "$previous"
+    exit 1
+  fi
+
+  for file in "${INSTALLER_MODULES[@]}"; do
+    chmod 600 "$stage/lib/$file" &&
+      mv -f -- "$stage/lib/$file" "$ROOT/lib/$file" || { refresh_failed=1; break; }
+  done
+  if (( ! refresh_failed )); then
+    chmod 700 "$stage/install.sh" &&
+      mv -f -- "$stage/install.sh" "$ROOT/install.sh" || refresh_failed=1
+  fi
+  if (( refresh_failed )); then
+    # Roll back all affected files (including newly introduced modules).
+    for file in "${INSTALLER_MODULES[@]}"; do
+      if [[ -e "$previous/lib/$file" ]]; then
+        cp -p -- "$previous/lib/$file" "$ROOT/lib/$file" || echo "CRITICAL: Failed to restore $file" >&2
+      else
+        rm -f -- "$ROOT/lib/$file"
+      fi
+    done
+    if [[ -e "$previous/install.sh" ]]; then
+      cp -p -- "$previous/install.sh" "$ROOT/install.sh" || echo "CRITICAL: Failed to restore install.sh" >&2
+    else
+      rm -f -- "$ROOT/install.sh"
+    fi
+    rm -rf -- "$stage" "$previous"
+    echo "Installer refresh could not be completed; rollback attempted." >&2
+    exit 1
+  fi
+  rm -rf -- "$stage" "$previous"
+  ln -sfn "$ROOT/install.sh" /usr/local/sbin/vps-installer || exit 1
+  # The child has a real filename as $0, so it will not download again.
+  exec bash "$ROOT/install.sh"
+  exit 1
+fi
+
+# Normal local launches do not perform a network refresh.
+for file in "${INSTALLER_MODULES[@]}"; do
+  if [[ ! -s "$ROOT/lib/$file" ]]; then
     url="https://raw.githubusercontent.com/$OWNER_REPO/$SOURCE_REF/lib/$file"
     temp="$(mktemp "$ROOT/lib/.download.XXXXXX")" || exit 1
-    curl --fail --silent --show-error --location --retry 3 "$url" -o "$temp" || { rm -f "$temp"; exit 1; }
-    chmod 600 "$temp"
-    mv "$temp" "$ROOT/lib/$file" || exit 1
+    if ! curl --fail --silent --show-error --location --retry 3 "$url" -o "$temp" ||
+       [[ ! -s "$temp" ]] || ! mv -f -- "$temp" "$ROOT/lib/$file"; then
+      rm -f -- "$temp"
+      exit 1
+    fi
+    chmod 600 "$ROOT/lib/$file"
   fi
 done
-if (( REFRESH_MODULES )) || [[ ! -s "$ROOT/install.sh" ]]; then
-  tmp_installer="$(mktemp "$ROOT/.install.XXXXXX")" || exit 1
-  curl --fail --silent --show-error --location --retry 3 \
-    "https://raw.githubusercontent.com/$OWNER_REPO/$SOURCE_REF/install.sh" -o "$tmp_installer" || { rm -f "$tmp_installer"; exit 1; }
-  chmod 700 "$tmp_installer"
-  mv "$tmp_installer" "$ROOT/install.sh" || exit 1
+if [[ ! -s "$ROOT/install.sh" ]]; then
+  echo "Local installer file is missing: $ROOT/install.sh" >&2
+  exit 1
 fi
 ln -sfn "$ROOT/install.sh" /usr/local/sbin/vps-installer
-bash -n "$ROOT"/lib/*.sh || { echo "Invalid Bash module syntax." >&2; exit 1; }
+bash -n "$ROOT/install.sh" || { echo "Invalid local installer syntax." >&2; exit 1; }
+for file in "$ROOT"/lib/*.sh; do
+  bash -n "$file" || { echo "Invalid Bash module syntax." >&2; exit 1; }
+done
 python3 -m py_compile "$ROOT"/lib/*.py || { echo "Invalid Python module syntax." >&2; exit 1; }
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/system.sh"
