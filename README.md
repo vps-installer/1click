@@ -70,6 +70,10 @@ The interactive menu lets you:
 - Save QR codes as PNG images.
 - Obtain a YAML configuration for Clash/Mihomo-compatible clients.
 
+## Automatic maintenance
+
+The optional **Automatic maintenance** menu manages Xray GeoIP/GeoSite updates, the existing AmneziaWG GeoBlock timer, daily Ubuntu security updates plus weekly APT upgrades, SMTP notifications through msmtp, and systemd timer status and logs. Sender and SMTP username share one value; the recipient is configured separately. Automatic reboot is disabled by default.
+
 ## Installation
 
 On a fresh Ubuntu 24.04 LTS VPS, run as `root`:
