@@ -78,16 +78,16 @@ while :; do
   say "  UNIVERSAL VPS INSTALLER"
   say "========================================"
   say "1) VPS defence and customization"
-  say "2) Xray"
-  say "3) AmneziaWG"
+  say "2) Xray (Install/Update)"
+  say "3) AmneziaWG (Install/Update)"
   say "4) Manage clients profiles"
   say "5) Automatic maintenance"
   say "0) Exit"
-  ask_choice "Choose option:" "1:VPS defence and customization" "2:Xray" "3:AmneziaWG" "4:Manage clients profiles" "5:Automatic maintenance" "0:Exit" || continue
+  ask_choice "Choose option:" "1:VPS defence and customization" "2:Xray (Install/Update)" "3:AmneziaWG (Install/Update)" "4:Manage clients profiles" "5:Automatic maintenance" "0:Exit" || continue
   case "$REPLY" in
     1) vps_defence_customization || warn "VPS defence stage did not finish." ;;
     2) xray_management_menu ;;
-    3) amnezia_installation || warn "AmneziaWG installation did not finish." ;;
+    3) amnezia_management_menu ;;
     4) profile_menu ;;
     5) automatic_maintenance_menu ;;
     0) exit 0 ;;

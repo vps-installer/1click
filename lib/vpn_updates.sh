@@ -1,12 +1,110 @@
 #!/usr/bin/env bash
 # Manual Xray Core updates; preserve managed config, private keys, services and GeoData.
 
+# Latest release is read-only. Network failures are never interpreted as "up to date".
+xray_current_version() {
+  local line
+  command -v xray >/dev/null 2>&1 || return 1
+  line="$(xray version 2>/dev/null)" || return 1
+  [[ "$line" =~ ^Xray[[:space:]]+v?([0-9][A-Za-z0-9.+-]*) ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+xray_latest_version() {
+  local response version
+  response="$(curl --fail --silent --show-error --location \
+    --connect-timeout 4 --max-time 12 --retry 0 \
+    -H 'Accept: application/vnd.github+json' \
+    https://api.github.com/repos/XTLS/Xray-core/releases/latest)" || return 1
+  version="$(python3 -c 'import json,sys,re
+try:
+    tag=json.load(sys.stdin)["tag_name"]
+    if not isinstance(tag,str) or not re.fullmatch(r"v?[0-9][A-Za-z0-9.+-]*",tag): raise ValueError()
+    print(tag.removeprefix("v"))
+except (ValueError, KeyError, TypeError): sys.exit(1)' <<< "$response")" || return 1
+  [[ -n "$version" ]] || return 1
+  printf '%s\n' "$version"
+}
+
 xray_core_status() {
-  if ! command -v xray >/dev/null 2>&1; then
-    warn 'Xray binary not found.'
-    return 1
+  local installed="${1:-}" latest="${2:-}"
+  [[ -n "$installed" ]] || installed="$(xray_current_version)" || installed='Not installed / Unknown'
+  [[ -n "$latest" ]] || latest='Unavailable (GitHub check failed)'
+  say "Installed version: $installed"
+  say "Latest release:    $latest"
+  if [[ "$installed" == 'Not installed / Unknown' || "$latest" == Unavailable* ]]; then
+    say 'Update status:     Unknown'
+  elif dpkg --compare-versions "$installed" lt "$latest"; then
+    say 'Update status:     Update available'
+  elif dpkg --compare-versions "$installed" eq "$latest"; then
+    say 'Update status:     Up to date'
+  elif dpkg --compare-versions "$installed" gt "$latest"; then
+    say 'Update status:     Installed version is newer'
+  else
+    say 'Update status:     Unknown'
   fi
-  xray version | head -n 1
+}
+
+# Refreshing APT metadata does not install or upgrade packages.
+awg_refresh_versions() {
+  say 'Refreshing APT package lists (no packages will be installed)...'
+  if timeout 90s apt-get -o DPkg::Lock::Timeout=15 -o Acquire::Retries=1 \
+      -o Acquire::http::Timeout=12 -o Acquire::https::Timeout=12 update >/dev/null 2>&1; then
+    AWG_APT_FRESH=yes
+  else
+    AWG_APT_FRESH=no
+    warn 'Could not refresh APT indexes; available package versions may be outdated.'
+  fi
+}
+
+awg_package_status() {
+  local package installed candidate update=no unknown=no
+  for package in amneziawg amneziawg-dkms amneziawg-tools; do
+    installed="$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null)" || installed='Not installed'
+    [[ -n "$installed" ]] || installed='Not installed'
+    candidate="$(apt-cache policy "$package" 2>/dev/null | awk '$1=="Candidate:" {print $2; exit}')"
+    [[ -n "$candidate" && "$candidate" != '(none)' ]] || candidate='Unavailable'
+    say "$package:"
+    say "  Installed: $installed"
+    say "  Latest (APT): $candidate"
+    if [[ "$candidate" == 'Unavailable' ]]; then
+      unknown=yes
+    elif [[ "$installed" == 'Not installed' ]] || dpkg --compare-versions "$installed" lt "$candidate"; then
+      update=yes
+    fi
+  done
+  if [[ "${AWG_APT_FRESH:-no}" != yes ]]; then
+    say 'Version status: Unverified (APT indexes not refreshed)'
+  elif [[ "$unknown" == yes ]]; then
+    say 'Version status: Unknown (missing candidate for at least one package)'
+  elif [[ "$update" == yes ]]; then
+    say 'Version status: Update available via weekly APT'
+  else
+    say 'Version status: Up to date'
+  fi
+}
+
+amnezia_management_menu() {
+  local choice
+  awg_refresh_versions
+  while :; do
+    say ''
+    say 'AMNEZIAWG MANAGEMENT'
+    awg_package_status
+    say 'Package updates: Managed by weekly Ubuntu APT'
+    say '1) Install / Configure AmneziaWG'
+    say '2) Refresh available versions (APT update only)'
+    say '3) Configure IPv6 ingress'
+    say '0) Exit'
+    ask_choice 'Choose option:' '1:Install / Configure' '2:Refresh versions' '3:IPv6 ingress' '0:Exit' || continue
+    choice="$REPLY"
+    case "$choice" in
+      1) amnezia_installation || warn 'AmneziaWG installation/configuration failed.' ;;
+      2) awg_refresh_versions ;;
+      3) vpn_installation_preflight && [[ -s /etc/amnezia/amneziawg/awg0.conf ]] && offer_awg_ipv6 || warn 'Unable to configure IPv6 ingress.' ;;
+      0) return ;;
+    esac
+  done
 }
 
 xray_core_update() {
@@ -100,20 +198,32 @@ xray_core_update() {
 }
 
 xray_management_menu() {
-  local choice
+  local choice installed latest
+  # Query remote release once on entry; use the refresh option to retry.
+  installed="$(xray_current_version)" || installed='Not installed / Unknown'
+  latest="$(xray_latest_version)" || latest='Unavailable (GitHub check failed)'
   while :; do
     say ''
     say 'XRAY MANAGEMENT'
-    xray_core_status || :
+    xray_core_status "$installed" "$latest"
     say '1) Install / Configure Xray'
     say '2) Update Xray Core'
+    say '3) Refresh available version'
     say '0) Exit'
-    ask_choice 'Choose option:' '1:Install / Configure' '2:Update Core' '0:Exit' || continue
+    ask_choice 'Choose option:' '1:Install / Configure' '2:Update Core' '3:Refresh version' '0:Exit' || continue
     choice="$REPLY"
     case "$choice" in
       1) xray_installation || warn 'Xray installation/configuration failed.' ;;
-      2) xray_core_update || warn 'Xray Core update failed.' ;;
+      2) if [[ "$latest" == Unavailable* ]]; then
+           warn 'Latest release could not be verified. No update started.'
+         elif [[ "$installed" != 'Not installed / Unknown' ]] && ! dpkg --compare-versions "$installed" lt "$latest"; then
+           ok 'Xray Core is already up to date; no service restart.'
+         else
+           xray_core_update || warn 'Xray Core update failed.'
+         fi ;;
+      3) latest="$(xray_latest_version)" || latest='Unavailable (GitHub check failed)' ;;
       0) return ;;
     esac
+    installed="$(xray_current_version)" || installed='Not installed / Unknown'
   done
 }

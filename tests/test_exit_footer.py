@@ -43,8 +43,8 @@ class ExitFooterTests(unittest.TestCase):
     def test_main_menu_includes_requested_options(self):
         for label in (
             "1) VPS defence and customization",
-            "2) Xray",
-            "3) AmneziaWG",
+            "2) Xray (Install/Update)",
+            "3) AmneziaWG (Install/Update)",
             "4) Manage clients profiles",
             "0) Exit",
         ):
@@ -53,7 +53,7 @@ class ExitFooterTests(unittest.TestCase):
     def test_operations_return_to_main_menu(self):
         self.assertIn("1) vps_defence_customization", self.installer_source)
         self.assertIn("2) xray_management_menu", self.installer_source)
-        self.assertIn("3) amnezia_installation", self.installer_source)
+        self.assertIn("3) amnezia_management_menu", self.installer_source)
         self.assertIn("4) profile_menu", self.installer_source)
         self.assertIn("0) exit 0", self.installer_source)
 

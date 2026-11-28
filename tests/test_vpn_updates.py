@@ -52,7 +52,7 @@ class VPNUpdateTests(unittest.TestCase):
         p = INSTALL.read_text()
         self.assertIn('vpn_updates.sh',p)
         self.assertIn('xray_management_menu',p)
-        self.assertNotIn('amnezia_management_menu',p)
+        self.assertIn('amnezia_management_menu',p)
 
     def test_xray_update_refuses_unmanaged_files_offline(self):
         # Do not touch the live host; test the refusal guard only.

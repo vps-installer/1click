@@ -70,7 +70,7 @@ class SetupStagesTests(unittest.TestCase):
     def test_menu_returns_without_exit_after_stages(self):
         self.assertIn("1) vps_defence_customization || warn", INSTALLER)
         self.assertIn("2) xray_management_menu ;;", INSTALLER)
-        self.assertIn("3) amnezia_installation || warn", INSTALLER)
+        self.assertIn("3) amnezia_management_menu ;;", INSTALLER)
         self.assertIn("4) profile_menu ;;", INSTALLER)
         self.assertIn("0) exit 0 ;;", INSTALLER)
 
