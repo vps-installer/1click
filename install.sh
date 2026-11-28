@@ -46,7 +46,7 @@ REFRESH_MODULES=0
 case "$0" in
   bash|-bash|sh|-sh) REFRESH_MODULES=1 ;;
 esac
-INSTALLER_MODULES=(common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py msmtp_probe.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py)
+INSTALLER_MODULES=(ui.sh common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py msmtp_probe.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py)
 if (( REFRESH_MODULES )); then
   stage="$(mktemp -d "$ROOT/.refresh.XXXXXXXX")" || exit 1
   mkdir -p "$stage/lib" || { rm -rf -- "$stage"; exit 1; }
@@ -152,6 +152,7 @@ for file in "$ROOT"/lib/*.sh; do
 done
 python3 -m py_compile "$ROOT"/lib/*.py || { echo "Invalid Python module syntax." >&2; exit 1; }
 source "$ROOT/lib/common.sh"
+source "$ROOT/lib/ui.sh"
 source "$ROOT/lib/system.sh"
 source "$ROOT/lib/vpn.sh"
 source "$ROOT/lib/vpn_updates.sh"

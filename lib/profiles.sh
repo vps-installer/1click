@@ -26,6 +26,7 @@ PY
 
 profile_format() {
   local type="$1" action="$2"
+  ui_header "PROFILE OUTPUT / ${type^^}"
   if [[ "$action" == get ]]; then
     say "What would you like to view?"
     say "1) Connection settings (readable)"
@@ -79,6 +80,7 @@ profile_format() {
 
 profile_family() {
   local type="$1" choice
+  ui_header "CONNECTION ADDRESS / ${type^^}"
   say "Connection address:"
   say "1) IPv4"
   say "2) IPv6"
@@ -129,6 +131,7 @@ choose_saved_profile() {
     warn "There are no existing profiles."
     return 1
   fi
+  ui_header "SAVED PROFILES"
   say "Choose a saved profile:"
   for name in "${profiles[@]}"; do
     ((index++))
@@ -149,6 +152,7 @@ choose_saved_profile() {
 
 profile_menu() {
   local type action name existing
+  ui_header "MANAGE CLIENT PROFILES"
   say "1) VLESS / Xray"
   say "2) AmneziaWG"
   say "0) Exit"
@@ -167,6 +171,7 @@ profile_menu() {
 
   while :; do
   existing="$(list_profiles "$type")" || { warn "Cannot enumerate existing profiles."; return 1; }
+  ui_header "CLIENT PROFILES / ${type^^}"
   if [[ -n "$existing" ]]; then
     say ""
     say "Existing $type profiles:"

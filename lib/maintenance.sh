@@ -44,6 +44,7 @@ maint_ensure_binaries() {
 }
 maint_ask_schedule() {
   local title="$1" current="$2" selection
+  ui_header "UPDATE SCHEDULE / ${title^^}"
   say "1) Daily at 04:20"
   say "2) Mon, Wed, Fri at 00:01"
   say "3) Monday at 03:00"
@@ -363,6 +364,7 @@ maint_smtp_use_existing() {
 }
 maint_smtp_configure() {
   local host port encryption sender recipient password original tmp save
+  ui_header "SMTP CONFIGURATION"
   maint_load
   ask 'SMTP server hostname:'; host="$REPLY"
   [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || { warn 'Invalid SMTP hostname.'; return 1; }
@@ -415,6 +417,7 @@ EOF
   ok 'SMTP configuration saved. Send a test message to verify delivery.'
 }
 maint_smtp_addresses() {
+  ui_header "EMAIL ADDRESSES"
   maint_load
   say '1) Change sender / SMTP username'; say '2) Change recipient'; say '0) Exit'
   ask_choice 'Choose option:' '1:Sender' '2:Recipient' '0:Exit' || return
