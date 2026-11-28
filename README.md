@@ -72,6 +72,9 @@ The interactive menu lets you:
 
 ## Automatic maintenance
 
+**VPN component updates:** Xray Core can be updated manually from its management menu with a backup and config validation; GeoData and server credentials are preserved. AmneziaWG packages remain managed by the regular weekly Ubuntu APT upgrade; post-upgrade checks verify the running module, interface, DNS service and fail-closed GeoBlock. Automatic reboot remains disabled by default; enabling it requires further checks. These checks do not protect reboots initiated outside this installer.
+
+
 The optional **Automatic maintenance** menu manages Xray GeoIP/GeoSite updates, the existing AmneziaWG GeoBlock timer, daily Ubuntu security updates plus weekly APT upgrades, SMTP notifications through msmtp, and systemd timer status and logs. Sender and SMTP username share one value; the recipient is configured separately. Automatic reboot is disabled by default.
 
 ## Installation

@@ -44,7 +44,7 @@ REFRESH_MODULES=0
 case "$0" in
   bash|-bash|sh|-sh) REFRESH_MODULES=1 ;;
 esac
-for file in common.sh system.sh vpn.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py; do
+for file in common.sh system.sh vpn.sh vpn_updates.sh profiles.sh maintenance.sh maintenance_task.sh maintenance_notify.sh maintenance_geodata.py profile_manager.py profile_edit.py install_options.py geoblock_update.py ipv6_support.py; do
   if (( REFRESH_MODULES )) || [[ ! -s "$ROOT/lib/$file" ]]; then
     url="https://raw.githubusercontent.com/$OWNER_REPO/$SOURCE_REF/lib/$file"
     temp="$(mktemp "$ROOT/lib/.download.XXXXXX")" || exit 1
@@ -66,6 +66,7 @@ python3 -m py_compile "$ROOT"/lib/*.py || { echo "Invalid Python module syntax."
 source "$ROOT/lib/common.sh"
 source "$ROOT/lib/system.sh"
 source "$ROOT/lib/vpn.sh"
+source "$ROOT/lib/vpn_updates.sh"
 source "$ROOT/lib/profiles.sh"
 source "$ROOT/lib/maintenance.sh"
 require_root
@@ -85,7 +86,7 @@ while :; do
   ask_choice "Choose option:" "1:VPS defence and customization" "2:Xray" "3:AmneziaWG" "4:Manage clients profiles" "5:Automatic maintenance" "0:Exit" || continue
   case "$REPLY" in
     1) vps_defence_customization || warn "VPS defence stage did not finish." ;;
-    2) xray_installation || warn "Xray installation did not finish." ;;
+    2) xray_management_menu ;;
     3) amnezia_installation || warn "AmneziaWG installation did not finish." ;;
     4) profile_menu ;;
     5) automatic_maintenance_menu ;;

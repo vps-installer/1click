@@ -10,6 +10,54 @@ CONFIG=/etc/vps-installer/maintenance.env
 [[ $EUID -eq 0 ]] || { echo 'Root required' >&2; exit 1; }
 [[ -f "$CONFIG" ]] && source "$CONFIG"
 notify() { [[ -x "$NOTIFY" ]] && "$NOTIFY" "$1" "$2" "$3" || :; }
+# The weekly APT job installs AmneziaWG packages through the official PPA.
+# Runtime checks never modify DKMS, packages, client profiles or firewall rules.
+check_awg_health() {
+  [[ -s /etc/amnezia/amneziawg/awg0.conf ]] || return 0
+  local failures=()
+  modinfo -k "$(uname -r)" amneziawg >/dev/null 2>&1 || failures+=(dkms-current-kernel)
+  for unit in awg-quick@awg0.service awg-geoblock.service awg-dns.service; do
+    systemctl is-active --quiet "$unit" || failures+=("$unit")
+  done
+  if command -v awg >/dev/null 2>&1; then
+    awg show awg0 >/dev/null 2>&1 || failures+=(awg0)
+  else
+    failures+=(awg-tools)
+  fi
+  if [[ -x /usr/local/sbin/awg-geoblock-check.sh ]]; then
+    /usr/local/sbin/awg-geoblock-check.sh >/dev/null 2>&1 || failures+=(geoblock-policy)
+  else
+    failures+=(geoblock-checker)
+  fi
+  if (( ${#failures[@]} )); then
+    printf 'AmneziaWG health check failed: %s\n' "${failures[*]}" >&2
+    return 1
+  fi
+}
+
+# Determine the kernel selected by default, not just the highest /boot filename.
+# If we cannot determine the next kernel safely, refuse automated reboot.
+check_awg_reboot_ready() {
+  [[ -s /etc/amnezia/amneziawg/awg0.conf ]] || return 0
+  local next_kernel
+  next_kernel="$(find /boot -maxdepth 1 -name 'vmlinuz-*' -printf '%f\n' | sed 's/^vmlinuz-//' | sort -V | tail -n 1)"
+  [[ -n "$next_kernel" ]] || { echo 'Cannot identify next kernel.' >&2; return 1; }
+  modinfo -k "$next_kernel" amneziawg >/dev/null 2>&1 || {
+    echo "Missing AmneziaWG module for kernel $next_kernel." >&2
+    return 1
+  }
+  # With custom boot loaders the highest-version kernel may not be the default.
+  # This is intentionally conservative: do not automatically reboot if uncertain.
+  if command -v grub-editenv >/dev/null 2>&1; then
+    local saved
+    saved="$(grub-editenv list 2>/dev/null | sed -n 's/^saved_entry=//p')"
+    if [[ -n "$saved" ]]; then
+      echo 'GRUB saved_entry overrides default; manual reboot verification required.' >&2
+      return 1
+    fi
+  fi
+}
+
 mode="${1:-}"
 case "$mode" in
   apt)
@@ -33,17 +81,18 @@ case "$mode" in
       exit 1
     fi
     echo "APT completed: $(date -Is)"
+    # Post-upgrade module and fail-closed checks. Failure must not trigger reboot.
+    if ! check_awg_health; then
+      notify apt failed "APT succeeded but AmneziaWG health check failed on $(hostname); automatic reboot blocked."
+      exit 1
+    fi
+    echo 'AWG_HEALTH: OK'
     if [[ -f /run/reboot-required ]]; then
       notify apt reboot-required "APT upgrade completed. Reboot required on $(hostname)."
       if [[ ${MAINT_AUTO_REBOOT:-no} == yes ]]; then
-        # Do not reboot if a future AWG kernel module is not present.
-        if [[ -f /etc/amnezia/amneziawg/awg0.conf ]]; then
-          next_kernel="$(find /boot -maxdepth 1 -name 'vmlinuz-*' -printf '%f\n' | sed 's/^vmlinuz-//' | sort -V | tail -n 1)"
-          if [[ -z "$next_kernel" ]] || ! modinfo -k "$next_kernel" amneziawg >/dev/null 2>&1; then
-            notify apt failed "Automatic reboot blocked: AmneziaWG unavailable for kernel ${next_kernel:-unknown}."
-            echo 'Automatic reboot blocked: missing future AmneziaWG kernel module.' >&2
-            exit 1
-          fi
+        if ! check_awg_reboot_ready; then
+          notify apt failed "Automatic reboot blocked: cannot verify AmneziaWG module for next kernel."
+          exit 1
         fi
         install -d -m 700 /var/lib/vps-maintenance
         date -Is > /var/lib/vps-maintenance/reboot-pending
@@ -83,7 +132,7 @@ case "$mode" in
       for unit in awg-quick@awg0.service awg-geoblock.service awg-dns.service; do
         systemctl is-active --quiet "$unit" || issue+=("$unit")
       done
-      /usr/local/sbin/awg-geoblock-check.sh >/dev/null 2>&1 || issue+=(geoblock-policy)
+      check_awg_health || issue+=(awg-health)
     fi
     if (( ${#issue[@]} == 0 )); then
       notify boot healthy "VPS reboot health check passed on $(hostname)."
